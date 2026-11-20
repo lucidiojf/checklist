@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Quick List Calculator</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f4f6f8;
+    --border: #d0d7de;
+    --text: #000000;
+    --muted: #6b7280;
+    --primary: #0f62fe;
+    --success: #16a34a;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--text); padding-bottom: 88px; }
+
+  header {
+    position: sticky; top: 0; z-index: 10; background: #fff;
+    border-bottom: 1px solid var(--border); padding: 8px 10px;
+  }
+  .top-bar { display: flex; gap: 5px; align-items: center; margin-bottom: 6px; }
+  select, input {
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+    font-size: 14px; background: #fff; color: #000;
+  }
+  select { flex: 1; font-weight: 700; }
+  button {
+    border: 1px solid var(--border); background: var(--surface); color: #000;
+    border-radius: 6px; padding: 6px 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  button.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  button.danger { color: var(--danger); }
+
+  .sub-bar { display: flex; gap: 5px; align-items: center; }
+  .sub-bar input { flex: 1; padding: 5px 8px; font-size: 13px; }
+
+  .add-bar {
+    display: grid; grid-template-columns: 1fr 52px 76px 38px; gap: 4px;
+    padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  .add-bar input { width: 100%; }
+
+  .items { padding: 2px 10px; }
+  .row {
+    display: grid; grid-template-columns: 24px 1fr 50px 72px 24px; gap: 4px;
+    align-items: center; padding: 7px 0; border-bottom: 1px solid #eee;
+  }
+  .row.checked { opacity: 0.55; }
+  .row.checked .name-inp { text-decoration: line-through; color: var(--muted); }
+  .row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--success); margin: 0; }
+  .row input[type="text"], .row input[type="number"] {
+    border: 1px solid transparent; padding: 4px; width: 100%; font-size: 14px;
+  }
+  .row input:focus { border-color: var(--primary); background: #fff; outline: none; }
+  .num { text-align: right; }
+  .del { background: none; border: none; color: var(--muted); font-size: 15px; padding: 0; }
+
+  footer {
+    position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
+    border-top: 2px solid var(--border); padding: 8px 12px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .tot-box { font-size: 12px; line-height: 1.35; }
+  .tot-main { font-size: 17px; font-weight: 800; color: var(--primary); }
+  .foot-btns { display: flex; gap: 5px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top-bar">
+    <select id="listSelect" onchange="switchList(this.value)"></select>
+    <button class="primary" onclick="newList()">+ Lista</button>
+    <button onclick="copyList()">Copiar</button>
+    <button class="danger" onclick="delList()">🗑️</button>
+  </div>
+  <div class="sub-bar">
+    <input type="text" id="searchInput" placeholder="Filtrar item..." oninput="render()">
+    <button onclick="clearChecked()">Limpar ✅</button>
+    <button onclick="exportJson()">Backup</button>
+    <button onclick="document.getElementById('impFile').click()">Restaurar</button>
+    <input type="file" id="impFile" accept=".json" style="display:none" onchange="importJson(event)">
+  </div>
+</header>
+
+<div class="add-bar">
+  <input type="text" id="inName" placeholder="Novo item..." onkeydown="if(event.key==='Enter') addItem()">
+  <input type="number" id="inQty" value="1" step="any" class="num" onkeydown="if(event.key==='Enter') addItem()">
+  <input type="number" id="inPrice" step="0.01" placeholder="R$ 0,00" class="num" onkeydown="if(event.key==='Enter') addItem()">
+  <button class="primary" onclick="addItem()">+</button>
+</div>
+
+<div class="items" id="itemsContainer"></div>
+
+<footer>
+  <div class="tot-box">
+    <div>Marcados: <strong id="checkedTot">R$ 0,00</strong> (<span id="checkedCnt">0</span>/<span id="totalCnt">0</span>)</div>
+    <div class="tot-main">Total: <span id="grandTot">R$ 0,00</span></div>
+  </div>
+  <div class="foot-btns">
+    <button onclick="shareWhatsApp()">WhatsApp</button>
+    <button class="primary" onclick="if(tg) tg.close()">Fechar</button>
+  </div>
+</footer>
+
+<script>
+  const KEY = 'quicklist_gh_v1';
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  let state = JSON.parse(localStorage.getItem(KEY)) || {
+    activeId: 'default',
+    lists: { default: { name: 'Compras Gerais', items: [] } }
+  };
+
+  // Tenta carregar da nuvem nativa do Telegram se existir e estiver mais recente
+  if (tg && tg.CloudStorage) {
+    tg.CloudStorage.getItem(KEY, (err, val) => {
+      if (!err && val) {
+        try {
+          const cloudData = JSON.parse(val);
+          if (cloudData && cloudData.lists) {
+            state = cloudData;
+            localStorage.setItem(KEY, val);
+            render();
+          }
+        } catch (e) {}
+      }
+    });
+  }
+
+  function save() {
+    const raw = JSON.stringify(state);
+    localStorage.setItem(KEY, raw);
+    if (tg && tg.CloudStorage && raw.length < 4096) {
+      tg.CloudStorage.setItem(KEY, raw);
+    }
+  }
+
+  function formatBRL(v) {
+    return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  }
+
+  function switchList(id) { state.activeId = id; save(); render(); }
+
+  function newList() {
+    const name = prompt('Nome da lista:');
+    if (!name || !name.trim()) return;
+    const id = 'l_' + Date.now();
+    state.lists[id] = { name: name.trim(), items: [] };
+    state.activeId = id;
+    save(); render();
+  }
+
+  function copyList() {
+    const curr = state.lists[state.activeId];
+    const name = prompt('Nome da cópia:', curr.name + ' (Cópia)');
+    if (!name || !name.trim()) return;
+    const id = 'l_' + Date.now();
+    state.lists[id] = {
+      name: name.trim(),
+      items: curr.items.map(i => ({ ...i, id: Date.now() + Math.random(), checked: false }))
+    };
+    state.activeId = id;
+    save(); render();
+  }
+
+  function delList() {
+    const keys = Object.keys(state.lists);
+    if (keys.length <= 1) return alert('Mantenha ao menos uma lista.');
+    if (!confirm(`Excluir "${state.lists[state.activeId].name}"?`)) return;
+    delete state.lists[state.activeId];
+    state.activeId = Object.keys(state.lists)[0];
+    save(); render();
+  }
+
+  function addItem() {
+    const nameEl = document.getElementById('inName');
+    const qtyEl = document.getElementById('inQty');
+    const priceEl = document.getElementById('inPrice');
+    const name = nameEl.value.trim();
+    if (!name) return;
+
+    state.lists[state.activeId].items.unshift({
+      id: Date.now(),
+      name,
+      qty: parseFloat(qtyEl.value) || 1,
+      price: parseFloat(priceEl.value) || 0,
+      checked: false
+    });
+
+    nameEl.value = ''; qtyEl.value = '1'; priceEl.value = '';
+    nameEl.focus();
+    save(); render();
+  }
+
+  function updateItem(id, field, val) {
+    const item = state.lists[state.activeId].items.find(i => i.id === id);
+    if (!item) return;
+    if (field === 'checked') item.checked = val;
+    else if (field === 'name') item.name = val;
+    else item[field] = parseFloat(val) || 0;
+    save(); render();
+  }
+
+  function removeItem(id) {
+    const list = state.lists[state.activeId];
+    list.items = list.items.filter(i => i.id !== id);
+    save(); render();
+  }
+
+  function clearChecked() {
+    const list = state.lists[state.activeId];
+    list.items = list.items.filter(i => !i.checked);
+    save(); render();
+  }
+
+  function shareWhatsApp() {
+    const list = state.lists[state.activeId];
+    let total = 0;
+    let lines = [`*${list.name}*`];
+    list.items.forEach(i => {
+      const sub = i.qty * i.price;
+      total += sub;
+      lines.push(`${i.checked ? '✅' : '⬜'} ${i.qty}x ${i.name} — ${formatBRL(sub)}`);
+    });
+    lines.push(`\n*Total: ${formatBRL(total)}*`);
+    const url = `https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`;
+    if (tg) tg.openLink(url); else window.open(url, '_blank');
+  }
+
+  function exportJson() {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `quicklist_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+  }
+
+  function importJson(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      try {
+        const d = JSON.parse(ev.target.result);
+        if (d && d.lists) { state = d; save(); render(); alert('Restaurado!'); }
+      } catch { alert('Arquivo inválido.'); }
+    };
+    r.readAsText(file);
+  }
+
+  function render() {
+    const sel = document.getElementById('listSelect');
+    sel.innerHTML = Object.entries(state.lists).map(([id, l]) =>
+      `<option value="${id}" ${id === state.activeId ? 'selected' : ''}>${l.name}</option>`
+    ).join('');
+
+    const list = state.lists[state.activeId];
+    const q = document.getElementById('searchInput').value.toLowerCase();
+    const sorted = [...list.items].sort((a, b) => Number(a.checked) - Number(b.checked));
+    const visible = sorted.filter(i => i.name.toLowerCase().includes(q));
+
+    let grand = 0, checkedSum = 0, checkedCnt = 0;
+    list.items.forEach(i => {
+      const sub = i.qty * i.price;
+      grand += sub;
+      if (i.checked) { checkedSum += sub; checkedCnt++; }
+    });
+
+    document.getElementById('itemsContainer').innerHTML = visible.map(i => `
+      <div class="row ${i.checked ? 'checked' : ''}">
+        <input type="checkbox" ${i.checked ? 'checked' : ''} onchange="updateItem(${i.id}, 'checked', this.checked)">
+        <input type="text" class="name-inp" value="${i.name.replace(/"/g, '&quot;')}" onchange="updateItem(${i.id}, 'name', this.value)">
+        <input type="number" class="num" step="any" value="${i.qty}" onchange="updateItem(${i.id}, 'qty', this.value)">
+        <input type="number" class="num" step="0.01" value="${i.price || ''}" placeholder="0,00" onchange="updateItem(${i.id}, 'price', this.value)">
+        <button class="del" onclick="removeItem(${i.id})">✕</button>
+      </div>
+    `).join('');
+
+    document.getElementById('grandTot').textContent = formatBRL(grand);
+    document.getElementById('checkedTot').textContent = formatBRL(checkedSum);
+    document.getElementById('checkedCnt').textContent = checkedCnt;
+    document.getElementById('totalCnt').textContent = list.items.length;
+  }
+
+  render();
+</script>
+</body>
+</html>
